@@ -86,10 +86,6 @@ func (c *connection) onRequest() (err error) {
 	if process == nil {
 		return nil
 	}
-	// Buffer has been fully processed, or task already exists
-	if !c.lock(processing) {
-		return nil
-	}
 	// add new task
 	var task = func() {
 		if c.ctx == nil {
@@ -102,17 +98,11 @@ func (c *connection) onRequest() (err error) {
 			// Single request processing, blocking allowed.
 			handler(c.ctx, c)
 		}
-		// Handling callback if connection has been closed.
+		// return if connection has been closed.
 		if !c.IsActive() {
-			c.closeCallback(false)
 			return
 		}
-		// Double check when exiting.
-		c.unlock(processing)
 		if c.Reader().Len() > 0 {
-			if !c.lock(processing) {
-				return
-			}
 			goto START
 		}
 	}
@@ -123,10 +113,11 @@ func (c *connection) onRequest() (err error) {
 // closeCallback .
 // It can be confirmed that closeCallback and onRequest will not be executed concurrently.
 // If onRequest is still running, it will trigger closeCallback on exit.
-func (c *connection) closeCallback(needLock bool) (err error) {
-	if needLock && !c.lock(processing) {
-		return nil
-	}
+func (c *connection) closeCallback() (err error) {
+	//waiting for all running function finished
+	c.scheduler.pause()
+	defer c.scheduler.resume()
+
 	var latest = c.callbacks.Load()
 	if latest == nil {
 		return nil
@@ -155,7 +146,7 @@ func (c *connection) register() (err error) {
 
 // isIdle implements gracefulExit.
 func (c *connection) isIdle() (yes bool) {
-	return c.isUnlock(processing) &&
+	return c.isEmpty() &&
 		c.inputBuffer.IsEmpty() &&
 		c.outputBuffer.IsEmpty()
 }

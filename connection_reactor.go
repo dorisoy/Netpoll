@@ -25,11 +25,12 @@ import (
 func (c *connection) onHup(p Poll) error {
 	if c.closeBy(poller) {
 		c.triggerRead()
+		c.triggerWrite()
 		// It depends on closing by user if OnRequest is nil, otherwise it needs to be released actively.
 		// It can be confirmed that the OnRequest goroutine has been exited before closecallback executing,
 		// and it is safe to close the buffer at this time.
 		if process, _ := c.process.Load().(OnRequest); process != nil {
-			c.closeCallback(true)
+			c.closeCallback()
 		}
 	}
 	return nil
@@ -43,36 +44,29 @@ func (c *connection) onClose() error {
 			c.operator.Control(PollDetach)
 		}
 		c.triggerRead()
-		c.closeCallback(true)
+		c.triggerWrite()
+		c.closeCallback()
 		return nil
 	}
 	if c.isCloseBy(poller) {
 		// Connection with OnRequest of nil
 		// relies on the user to actively close the connection to recycle resources.
-		c.closeCallback(true)
+		c.closeCallback()
 	}
 	return nil
 }
 
 // closeBuffer recycle input & output LinkBuffer.
 func (c *connection) closeBuffer() {
-	c.stop(reading)
-	c.stop(writing)
-	if c.lock(inputBuffer) {
-		c.inputBuffer.Close()
-		barrierPool.Put(c.inputBarrier)
-	}
-	if c.lock(outputBuffer) {
-		c.outputBuffer.Close()
-		barrierPool.Put(c.outputBarrier)
-	}
+	c.inputBuffer.Close()
+	barrierPool.Put(c.inputBarrier)
+	c.outputBuffer.Close()
+	barrierPool.Put(c.outputBarrier)
 }
 
 // inputs implements FDOperator.
 func (c *connection) inputs(vs [][]byte) (rs [][]byte) {
-	if !c.lock(reading) {
-		return rs
-	}
+	c.add()
 
 	n := int(atomic.LoadInt32(&c.waitReadSize))
 	if n <= pagesize {
@@ -88,12 +82,13 @@ func (c *connection) inputs(vs [][]byte) (rs [][]byte) {
 
 // inputAck implements FDOperator.
 func (c *connection) inputAck(n int) (err error) {
+	defer c.done()
+
 	if n < 0 {
 		n = 0
 	}
 	lack := atomic.AddInt32(&c.waitReadSize, int32(-n))
 	err = c.inputBuffer.BookAck(n, lack <= 0)
-	c.unlock(reading)
 	c.triggerRead()
 	c.onRequest()
 	return err
@@ -101,11 +96,7 @@ func (c *connection) inputAck(n int) (err error) {
 
 // outputs implements FDOperator.
 func (c *connection) outputs(vs [][]byte) (rs [][]byte, supportZeroCopy bool) {
-	if !c.lock(writing) {
-		return rs, c.supportZeroCopy
-	}
 	if c.outputBuffer.IsEmpty() {
-		c.unlock(writing)
 		c.rw2r()
 		return rs, c.supportZeroCopy
 	}
@@ -119,8 +110,6 @@ func (c *connection) outputAck(n int) (err error) {
 		c.outputBuffer.Skip(n)
 		c.outputBuffer.Release()
 	}
-	// must unlock before check empty
-	c.unlock(writing)
 	if c.outputBuffer.IsEmpty() {
 		c.rw2r()
 	}
@@ -138,10 +127,6 @@ func (c *connection) rw2r() {
 
 // flush write data directly.
 func (c *connection) flush() error {
-	if !c.lock(writing) {
-		return nil
-	}
-	defer c.unlock(writing)
 	if c.outputBuffer.IsEmpty() {
 		return nil
 	}
@@ -162,9 +147,18 @@ func (c *connection) flush() error {
 	if c.outputBuffer.IsEmpty() {
 		return nil
 	}
+	left := c.outputBuffer.Len()
+	atomic.StoreInt32(&c.waitWriteSize, int32(left))
 	err = c.operator.Control(PollR2RW)
 	if err != nil {
+		atomic.StoreInt32(&c.waitWriteSize, 0)
 		return Exception(err, "when flush")
 	}
+
+	<-c.writeTrigger
+	if atomic.LoadInt32(&c.waitWriteSize) <= 0 {
+		return nil
+	}
+	//TODO: return flush error
 	return nil
 }

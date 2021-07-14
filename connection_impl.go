@@ -30,11 +30,14 @@ type connection struct {
 	netFD
 	onEvent
 	locker
+	scheduler
 	operator        *FDOperator
 	readTimeout     time.Duration
 	readTimer       *time.Timer
-	readTrigger     chan int
+	readTrigger     chan struct{}
 	waitReadSize    int32
+	writeTrigger    chan struct{}
+	waitWriteSize   int32
 	inputBuffer     *LinkBuffer
 	outputBuffer    *LinkBuffer
 	inputBarrier    *barrier
@@ -164,9 +167,8 @@ func (c *connection) MallocLen() (length int) {
 // If empty, it will call syscall.Write to send data directly,
 // otherwise the buffer will be sent asynchronously by the epoll trigger.
 func (c *connection) Flush() error {
-	if c.IsActive() && c.lock(outputBuffer) {
+	if c.IsActive() {
 		c.outputBuffer.Flush()
-		c.unlock(outputBuffer)
 		return c.flush()
 	}
 	return Exception(ErrConnClosed, "when flush")
@@ -257,7 +259,8 @@ func (c *connection) init(conn Conn, prepare OnPrepare) (err error) {
 	syscall.SetNonblock(c.fd, true)
 
 	// init buffer, barrier, finalizer
-	c.readTrigger = make(chan int, 1)
+	c.readTrigger = make(chan struct{}, 1)
+	c.writeTrigger = make(chan struct{}, 1)
 	c.inputBuffer, c.outputBuffer = NewLinkBuffer(pagesize), NewLinkBuffer()
 	c.inputBarrier, c.outputBarrier = barrierPool.Get().(*barrier), barrierPool.Get().(*barrier)
 	c.setFinalizer()
@@ -306,7 +309,14 @@ func (c *connection) setFinalizer() {
 
 func (c *connection) triggerRead() {
 	select {
-	case c.readTrigger <- 0:
+	case c.readTrigger <- struct{}{}:
+	default:
+	}
+}
+
+func (c *connection) triggerWrite() {
+	select {
+	case c.writeTrigger <- struct{}{}:
 	default:
 	}
 }
