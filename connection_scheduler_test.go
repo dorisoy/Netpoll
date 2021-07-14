@@ -15,23 +15,24 @@
 package netpoll
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 func TestConnectionScheduler(t *testing.T) {
 	var scher scheduler
-	done := 0
+	var done int32
 	gsize := 10
 	for i := 0; i < gsize; i++ {
 		scher.add()
 		go func() {
 			defer scher.done()
 			time.Sleep(time.Millisecond * 10)
-			done++
+			atomic.AddInt32(&done, 1)
 		}()
 	}
 	scher.pause()
-	Assert(t, done == gsize, done, gsize)
+	Equal(t, done, int32(gsize))
 	scher.resume()
 }
