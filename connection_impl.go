@@ -35,6 +35,7 @@ type connection struct {
 	readTimer       *time.Timer
 	readTrigger     chan struct{}
 	waitReadSize    int32
+	nextReadSize    int32
 	writeTrigger    chan error
 	inputBuffer     *LinkBuffer
 	outputBuffer    *LinkBuffer
@@ -105,8 +106,15 @@ func (c *connection) Skip(n int) (err error) {
 }
 
 // Release implements Connection.
-func (c *connection) Release() (err error) {
-	return c.inputBuffer.Release()
+func (c *connection) Release() error {
+	size, err := c.inputBuffer.ReleaseV2()
+	
+	next := atomic.LoadInt32(&c.nextReadSize)
+	newsize := int32(size)
+	if newsize > next {
+		atomic.StoreInt32(&c.nextReadSize, newsize)
+	}
+	return err
 }
 
 // Slice implements Connection.

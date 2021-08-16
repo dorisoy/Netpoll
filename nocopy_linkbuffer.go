@@ -184,6 +184,24 @@ func (b *LinkBuffer) Release() (err error) {
 	return nil
 }
 
+func (b *LinkBuffer) ReleaseV2() (releaseSize int, err error) {
+	for b.read != b.flush && b.read.Len() == 0 {
+		b.read = b.read.next
+	}
+	for b.head != b.read {
+		node := b.head
+		b.head = b.head.next
+		releaseSize += len(node.buf)
+		node.Release()
+	}
+	for i := range b.caches {
+		free(b.caches[i])
+		b.caches[i] = nil
+	}
+	b.caches = b.caches[:0]
+	return releaseSize, nil
+}
+
 // ReadString implements Reader.
 func (b *LinkBuffer) ReadString(n int) (s string, err error) {
 	// check whether enough or not.
@@ -523,6 +541,30 @@ func (b *LinkBuffer) GetBytes(p [][]byte) (vs [][]byte) {
 
 // Book will grow and fill the slice p greater than min.
 func (b *LinkBuffer) Book(min int, p [][]byte) (vs [][]byte) {
+	var i, l int
+	for {
+		l = cap(b.write.buf) - b.write.malloc
+		if l > 0 {
+			p[i] = b.write.Malloc(l)
+			i++
+			min -= l
+			if min <= 0 || i == len(p) {
+				break
+			}
+		}
+		if b.write.next == nil {
+			b.write.next = newLinkBufferNode(min)
+		}
+		b.write = b.write.next
+	}
+	return p[:i]
+}
+
+// Book will grow and fill the slice p greater than min.
+func (b *LinkBuffer) BookV2(min int, p [][]byte) (vs [][]byte) {
+	if min < 512 {
+		min = 512
+	}
 	var i, l int
 	for {
 		l = cap(b.write.buf) - b.write.malloc
