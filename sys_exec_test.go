@@ -91,83 +91,52 @@ func TestSendmsg(t *testing.T) {
 func BenchmarkWrite(b *testing.B) {
 	b.StopTimer()
 	r, w := GetSysFdPairs()
-	message := "hello, world!"
-	size := 5
-
-	go func() {
-		buffer := make([]byte, 13)
-		for {
-			syscall.Read(r, buffer)
-		}
-
-	}()
 
 	// benchmark
+	buffer := make([]byte, 128)
 	b.ReportAllocs()
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
-		var wmsg = make([]byte, len(message)*5)
-		var n int
-		for j := 0; j < size; j++ {
-			n += copy(wmsg[n:], message)
-		}
-		syscall.Write(w, wmsg)
+		syscall.RawSyscall(syscall.SYS_WRITE, uintptr(w), uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)))
+		syscall.RawSyscall(syscall.SYS_READ, uintptr(r), uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)))
 	}
 }
 
 func BenchmarkWritev(b *testing.B) {
 	b.StopTimer()
 	r, w := GetSysFdPairs()
-	message := "hello, world!"
-	size := 5
-	var barrier = barrier{}
-	barrier.bs = make([][]byte, size)
-	barrier.ivs = make([]syscall.Iovec, len(barrier.bs))
-	for i := range barrier.bs {
-		barrier.bs[i] = make([]byte, len(message))
-	}
-
-	go func() {
-		buffer := make([]byte, 13)
-		for {
-			syscall.Read(r, buffer)
-		}
-
-	}()
+	buffer := make([]byte, 128)
 
 	// benchmark
+	var br = barrier{}
+	br.bs = make([][]byte, 2)
+	br.bs[0] = make([]byte, 128)
+	br.bs[1] = make([]byte, 0, 128)
+	br.ivs = make([]syscall.Iovec, len(br.bs))
 	b.ReportAllocs()
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
-		writev(w, barrier.bs, barrier.ivs)
+		writev(w, br.bs, br.ivs)
+		syscall.RawSyscall(syscall.SYS_READ, uintptr(r), uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)))
 	}
 }
 
 func BenchmarkSendmsg(b *testing.B) {
 	b.StopTimer()
 	r, w := GetSysFdPairs()
-	message := "hello, world!"
-	size := 5
-	var barrier = barrier{}
-	barrier.bs = make([][]byte, size)
-	barrier.ivs = make([]syscall.Iovec, len(barrier.bs))
-	for i := range barrier.bs {
-		barrier.bs[i] = make([]byte, len(message))
-	}
-
-	go func() {
-		buffer := make([]byte, 13)
-		for {
-			syscall.Read(r, buffer)
-		}
-
-	}()
+	buffer := make([]byte, 128)
 
 	// benchmark
+	var br = barrier{}
+	br.bs = make([][]byte, 2)
+	br.bs[0] = make([]byte, 128)
+	br.bs[1] = make([]byte, 0, 128)
+	br.ivs = make([]syscall.Iovec, len(br.bs))
 	b.ReportAllocs()
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
-		sendmsg(w, barrier.bs, barrier.ivs, false)
+		sendmsg(w, br.bs, br.ivs, false)
+		syscall.RawSyscall(syscall.SYS_READ, uintptr(r), uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)))
 	}
 }
 

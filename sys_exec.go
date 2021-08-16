@@ -57,12 +57,18 @@ type barrier struct {
 
 // writev wraps the writev system call.
 func writev(fd int, bs [][]byte, ivs []syscall.Iovec) (n int, err error) {
+	var r uintptr
+	var e syscall.Errno
+
 	iovLen := iovecs(bs, ivs)
-	if iovLen == 0 {
+	switch iovLen {
+	case 0:
 		return 0, nil
+	case 1:
+		r, _, e = syscall.RawSyscall(syscall.SYS_WRITE, uintptr(fd), uintptr(unsafe.Pointer(ivs[0].Base)), uintptr(ivs[0].Len))
+	default:
+		r, _, e = syscall.RawSyscall(syscall.SYS_WRITEV, uintptr(fd), uintptr(unsafe.Pointer(&ivs[0])), uintptr(iovLen))
 	}
-	// syscall
-	r, _, e := syscall.RawSyscall(syscall.SYS_WRITEV, uintptr(fd), uintptr(unsafe.Pointer(&ivs[0])), uintptr(iovLen))
 	if e != 0 {
 		return int(r), syscall.Errno(e)
 	}
