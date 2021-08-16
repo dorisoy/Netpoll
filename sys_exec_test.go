@@ -17,6 +17,7 @@ package netpoll
 import (
 	"syscall"
 	"testing"
+	"unsafe"
 )
 
 func TestWritev(t *testing.T) {
@@ -173,53 +174,41 @@ func BenchmarkSendmsg(b *testing.B) {
 func BenchmarkRead(b *testing.B) {
 	b.StopTimer()
 	r, w := GetSysFdPairs()
-	message := "hello, world!"
-	size := 5
-	wmsg := make([]byte, size*len(message))
-	var n int
-	for j := 0; j < size; j++ {
-		n += copy(wmsg[n:], message)
-	}
-
 	go func() {
+		wmsg := make([]byte, 128*1024)
 		for {
 			syscall.Write(w, wmsg)
 		}
-
 	}()
 
 	// benchmark
+	buffer := make([]byte, 128)
 	b.ReportAllocs()
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
-		var buffer = make([]byte, size*len(message))
-		syscall.Read(r, buffer)
+		syscall.RawSyscall(syscall.SYS_READ, uintptr(r), uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)))
 	}
 }
 
 func BenchmarkReadv(b *testing.B) {
 	b.StopTimer()
 	r, w := GetSysFdPairs()
-	message := "hello, world!"
-	size := 5
-	var barrier = barrier{}
-	barrier.bs = make([][]byte, size)
-	barrier.ivs = make([]syscall.Iovec, len(barrier.bs))
-	for i := range barrier.bs {
-		barrier.bs[i] = make([]byte, len(message))
-	}
-
 	go func() {
+		wmsg := make([]byte, 128*1024)
 		for {
-			writeAll(w, []byte(message))
+			syscall.Write(w, wmsg)
 		}
-
 	}()
 
 	// benchmark
+	var br = barrier{}
+	br.bs = make([][]byte, 2)
+	br.bs[0] = make([]byte, 128)
+	br.bs[1] = make([]byte, 0, 128)
+	br.ivs = make([]syscall.Iovec, len(br.bs))
 	b.ReportAllocs()
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
-		readv(r, barrier.bs, barrier.ivs)
+		readv(r, br.bs, br.ivs)
 	}
 }
